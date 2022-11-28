@@ -1,6 +1,5 @@
 using BookStore.Core.Domain.Contracts;
 using BookStore.Infrastructures.DataAccess.Repositories;
-using BookStore.Services.ApplicationServices;
 using CourseStore.Infrastructures.DataAccess.DbContexts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -22,8 +21,7 @@ option.UseSqlServer(builder.Configuration.GetConnectionString("BookStore")));
 
 builder.Services.AddScoped<ICourseRepository, CourseRepository>();
 builder.Services.AddScoped<ICustomerRepository, CustomerRepository>();
-builder.Services.AddScoped<CustomerService, CustomerService>();
-builder.Services.AddScoped<CourseService, CourseService>();
+
 
 var app = builder.Build();
 

@@ -4,7 +4,8 @@ using System.Linq;
 using BookStore.Core.Domain.Contracts;
 using BookStore.Core.Domain.Dtos;
 using BookStore.Core.Domain.Entities;
-using BookStore.Services.ApplicationServices;
+using BookStore.Core.Domain.Utilities;
+using BookStore.Core.Domain.ValueObjects;
 using Microsoft.AspNetCore.Mvc;
 
 namespace BookStore.EndPoints.WebApi.Controllers
@@ -14,15 +15,11 @@ namespace BookStore.EndPoints.WebApi.Controllers
     {
         private readonly ICourseRepository _courseRepository;
         private readonly ICustomerRepository _customerRepository;
-        private readonly CustomerService _customerService;
 
-        public CustomersController(ICourseRepository courseRepository,
-                                   ICustomerRepository customerRepository,
-                                   CustomerService customerService)
+        public CustomersController(ICourseRepository courseRepository, ICustomerRepository customerRepository)
         {
             _customerRepository = customerRepository;
             _courseRepository = courseRepository;
-            _customerService = customerService;
         }
 
         [HttpGet]
@@ -34,16 +31,16 @@ namespace BookStore.EndPoints.WebApi.Controllers
             {
                 return NotFound();
             }
-
             var dto = new CustomerDto
             {
                 Id = customer.Id,
-                FirstName = customer.FirstName,
-                LastName = customer.LastName,
-                Email = customer.Email,
-                MoneySpent = customer.MoneySpent,
-                Status = customer.Status,
-                StatusExpirationDate = customer.StatusExpirationDate,
+
+                FirstName = customer.FullName.FirstName,
+                LastName = customer.FullName.LastName,
+                Email = customer.Email.Value,
+                MoneySpent = customer.MoneySpent.Value,
+                Status = customer.Status.Type,
+                StatusExpirationDate = customer.Status.ExpirationDate,
                 PurchasedCourses = customer.PurchasedCourses.Select(x => new PurchasedCourseDto
                 {
                     Price = x.Price,
@@ -52,31 +49,28 @@ namespace BookStore.EndPoints.WebApi.Controllers
                     Course = new CourseDto
                     {
                         Id = x.Course.Id,
-                        Name = x.Course.Name,
+                        Name = x.Course.Name
                     }
-                }).ToList(),
+                }).ToList()
             };
-
-            return Json(dto);
+            return Json(customer);
         }
 
         [HttpGet]
         public JsonResult GetList()
         {
             var customers = _customerRepository.GetList();
-
             var dtos = customers.Select(x => new CustomerInListDto
             {
                 Id = x.Id,
-                FirstName = x.FirstName,
-                LastName = x.LastName,
-                Email = x.Email,
-                MoneySpent = x.MoneySpent,
-                Status = x.Status,
-                StatusExpirationDate = x.StatusExpirationDate
+                FirstName = x.FullName.FirstName,
+                LastName = x.FullName.LastName,
+                Email = x.Email.Value,
+                MoneySpent = x.MoneySpent.Value,
+                Status = x.Status.Type.ToString(),
+                StatusExpirationDate = x.Status.ExpirationDate
             }).ToList();
-
-            return Json(dtos);
+            return Json(customers);
         }
 
         [HttpPost]
@@ -84,26 +78,18 @@ namespace BookStore.EndPoints.WebApi.Controllers
         {
             try
             {
-                if (!ModelState.IsValid)
-                {
-                    return BadRequest(ModelState);
-                }
+                var fullName = FullName.Create(item.FirstName, item.LastName);
+                var email = Email.Create(item.Email);
+                var result = Result.Combine(fullName, email);
+                if (result.IsFailure)
+                    return BadRequest(result.Error);
 
-                if (_customerRepository.GetByEmail(item.Email) != null)
+                if (_customerRepository.GetByEmail(email.Value) != null)
                 {
                     return BadRequest("ایمیل ورودی در حال حاضر ثبت شده است: " + item.Email);
                 }
 
-                var customer = new Customer
-                {
-                    FirstName = item.FirstName,
-                    LastName = item.LastName,
-                    Email = item.Email,
-                    Id = 0,
-                    Status = CustomerStatus.Regular
-                };   
-                
-                
+                var customer = new Customer(fullName.Value, email.Value);
                 _customerRepository.Add(customer);
                 _customerRepository.Save();
 
@@ -121,10 +107,9 @@ namespace BookStore.EndPoints.WebApi.Controllers
         {
             try
             {
-                if (!ModelState.IsValid)
-                {
-                    return BadRequest(ModelState);
-                }
+                var fullName = FullName.Create(item.FirstName, item.LastName);
+                if (fullName.IsFailure)
+                    return BadRequest(fullName.Error);
 
                 Customer customer = _customerRepository.GetById(id);
                 if (customer == null)
@@ -132,10 +117,7 @@ namespace BookStore.EndPoints.WebApi.Controllers
                     return BadRequest("شناسه مشتری قابل قبول نیست: " + id);
                 }
 
-
-                customer.FirstName = item.FirstName;
-                customer.LastName = item.LastName;
-
+                customer.SetFullName(fullName.Value);
                 _customerRepository.Save();
 
                 return Ok();
@@ -159,19 +141,16 @@ namespace BookStore.EndPoints.WebApi.Controllers
                 }
 
                 Customer customer = _customerRepository.GetById(id);
-
                 if (customer == null)
                 {
                     return BadRequest("شناسه مشتری قابل قبول نیست: " + id);
                 }
 
-                if (customer.PurchasedCourses.Any(x => x.CourseId == course.Id && (x.ExpirationDate == null || x.ExpirationDate.Value >= DateTime.UtcNow)))
+                if (customer.PurchasedCourses.Any(x => x.Course?.Id == course.Id && !x.ExpirationDate.IsExpired))
                 {
                     return BadRequest("دوره منتخب در حال حاضر ثبت شده است: " + course.Name);
                 }
-
-                _customerService.PurchaseCourse(customer, course);
-
+                customer.AddCourse(course);
                 _customerRepository.Save();
 
                 return Ok();
@@ -194,12 +173,11 @@ namespace BookStore.EndPoints.WebApi.Controllers
                     return BadRequest("شناسه مشتری قابل قبول نیست: " + id);
                 }
 
-                if (customer.Status == CustomerStatus.Advanced && (customer.StatusExpirationDate == null || customer.StatusExpirationDate.Value < DateTime.UtcNow))
+                if (customer.Status.IsAdvanced)
                 {
                     return BadRequest("در حال حاضر کاربر در وضعیت پیشرفته وجود دارد.");
                 }
-
-                bool success = _customerService.PromoteCustomer(customer);
+                bool success = customer.Promote();
                 if (!success)
                 {
                     return BadRequest("امکان ارتقا وضعیت کاربر وجود ندارد.");
